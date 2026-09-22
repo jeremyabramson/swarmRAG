@@ -1,0 +1,28 @@
+[project]
+name = "swarm-doc-scraper"
+version = "0.1.0"
+description = "Collect the documents listed in the swarm technology inventory for a retrieval system"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31",
+  "beautifulsoup4>=4.12",
+  "lxml>=4.9",
+  "markdownify>=0.11",
+  "pypdf>=4.0",
+  "openpyxl>=3.1",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+better = ["trafilatura>=1.8", "pymupdf>=1.24"]   # cleaner HTML and PDF text; used automatically if installed
+dev = ["pytest>=8"]
+
+[project.scripts]
+swarm-scraper = "swarm_scraper.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["swarm_scraper*"]
