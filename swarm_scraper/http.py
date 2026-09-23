@@ -18,7 +18,9 @@ DEFAULT_USER_AGENT = "swarm-doc-scraper/0.1 (research document collection; conta
 
 
 class FetchError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class RobotsDisallowed(FetchError):
@@ -159,5 +161,5 @@ class Fetcher:
     def get_ok(self, url: str, headers: dict | None = None) -> Response:
         resp = self.get(url, headers=headers)
         if not resp.ok:
-            raise FetchError(f"HTTP {resp.status} for {url}")
+            raise FetchError(f"HTTP {resp.status} for {url}", status=resp.status)
         return resp

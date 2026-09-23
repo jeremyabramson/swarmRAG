@@ -39,7 +39,13 @@ def process(record, ctx: Context) -> DocResult:
     except RobotsDisallowed as exc:
         ctx.store.add_manual(record, f"robots.txt disallows: {exc}")
         return DocResult(record.doc_id, "manual", message=str(exc))
-    except (FetchError, ValueError) as exc:
+    except FetchError as exc:
+        if exc.status in (401, 403):  # site refuses automated clients; a person can usually still get it
+            reason = f"Site refused automated access: {exc}"
+            ctx.store.add_manual(record, reason)
+            return DocResult(record.doc_id, "manual", message=reason)
+        return DocResult(record.doc_id, "error", message=str(exc))
+    except ValueError as exc:
         return DocResult(record.doc_id, "error", message=str(exc))
     except Exception as exc:  # keep the batch going; details go in the manifest
         return DocResult(record.doc_id, "error",

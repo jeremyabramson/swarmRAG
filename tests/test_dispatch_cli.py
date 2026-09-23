@@ -33,6 +33,16 @@ class DispatchTests(unittest.TestCase):
         res = process(record("https://blocked.org/page", "Web page to markdown"), ctx)
         self.assertEqual(res.status, "manual")
 
+    def test_forbidden_goes_to_manual(self):
+        f = FakeFetcher()
+        f.add("https://apps.dtic.mil/sti/tr/pdf/X.pdf", "Access Denied", status=403, ctype="text/html")
+        ctx, root = context(f)
+        res = process(record("https://apps.dtic.mil/sti/tr/pdf/X.pdf", "Direct PDF", doc_id="D5"), ctx)
+        self.assertEqual(res.status, "manual")
+        self.assertIn("403", res.message)
+        with open(root / "manual_queue.csv", encoding="utf-8") as fh:
+            self.assertEqual([r["doc_id"] for r in csv.DictReader(fh)], ["D5"])
+
     def test_unknown_method_and_http_errors(self):
         ctx, _ = context(FakeFetcher())
         self.assertIn("Unknown", process(record("https://x.org", "Carrier pigeon"), ctx).message)
