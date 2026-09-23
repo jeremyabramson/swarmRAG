@@ -4,3 +4,4 @@ __pycache__/
 corpus/
 *.egg-info/
 .pytest_cache/
+.env

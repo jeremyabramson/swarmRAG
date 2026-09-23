@@ -58,6 +58,18 @@ class DispatchTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_load_dotenv(self):
+        import os
+        import tempfile
+        from unittest import mock
+        path = Path(tempfile.mkdtemp()) / ".env"
+        path.write_text("# comment\nSWARM_TEST_A=one\nSWARM_TEST_B='two'\nSWARM_TEST_C=from-file\n")
+        with mock.patch.dict(os.environ, {"SWARM_TEST_C": "from-env"}):
+            cli.load_dotenv(str(path))
+            self.assertEqual((os.environ["SWARM_TEST_A"], os.environ["SWARM_TEST_B"]), ("one", "two"))
+            self.assertEqual(os.environ["SWARM_TEST_C"], "from-env")  # real environment wins
+        cli.load_dotenv(str(path.parent / "missing.env"))  # absent file is fine
+
     def test_dry_run_on_real_inventory(self):
         out = Path(context(FakeFetcher())[1])
         code = cli.main(["--inventory", str(INVENTORY), "--out", str(out), "--top3", "--tech", "PX4 Autopilot",

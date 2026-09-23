@@ -9,7 +9,8 @@ split into chunks for a retrieval system.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[better,dev]"      # 'better' adds trafilatura and PyMuPDF for cleaner text
-export GITHUB_TOKEN=...             # optional; raises the GitHub API limit from 60 to 5,000 requests per hour
+echo "GITHUB_TOKEN=..." > .env      # optional; raises the GitHub API limit from 60 to 5,000 requests per hour
+                                    # .env is git-ignored and read on startup; an exported variable wins
 export SCRAPER_CONTACT=you@example.com   # put in the User-Agent so site operators can reach you
 ```
 

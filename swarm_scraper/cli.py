@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
@@ -41,6 +42,19 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def load_dotenv(path: str = ".env") -> None:
+    """Set KEY=VALUE lines from a local .env file (git-ignored) unless already in the environment."""
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
 def interleave_by_host(records: list) -> list:
     """Order records round-robin by host so parallel workers start on different sites."""
     groups: dict[str, list] = defaultdict(list)
@@ -51,6 +65,7 @@ def interleave_by_host(records: list) -> list:
 
 def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
     args = build_parser().parse_args(argv)
+    load_dotenv()
     records = filter_records(load_records(args.inventory), top3_only=args.top3,
                              max_priority=args.max_priority, technologies=args.tech,
                              doc_ids=args.ids, confirmed_only=args.confirmed_only)
