@@ -24,7 +24,9 @@ MD_LINK = re.compile(r"\[[^\]]*\]\((https?://[^)\s]+)\)")
 SKIP_PATH = re.compile(r"/(_modules|_sources|_static|_images|_downloads)/|/(genindex|py-modindex|search)(\.html)?$"
                        r"|/(forums?|cdn-cgi|login|signin|signup|register|wp-admin|wp-json|feed)(/|$)", re.I)
 # Wiki and CMS views of a page that are not the page itself (edit, history, diff, print)
-SKIP_QUERY = re.compile(r"(^|&)(action=(?!view)|oldid=|diff=|printable=|do=|redirect=no|share=|replytocom=)", re.I)
+# and translated copies selected by query (?lang=zh-CN)
+SKIP_QUERY = re.compile(r"(^|&)(action=(?!view)|oldid=|diff=|printable=|do=|redirect=no|share=|replytocom=|lang=|hl=|locale=)",
+                        re.I)
 TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "ref_src")
 
 
@@ -92,6 +94,7 @@ class SiteCrawler:
         self.capped = False         # stopped at max_pages with pages left
         self._hashes: set[str] = set()
         self.redirected_from = ""
+        self.widened = False
         self.start_problem = ""     # why the start page itself gave nothing, for the error message
 
     def _set_start(self, url: str) -> None:
@@ -133,6 +136,19 @@ class SiteCrawler:
         if normalize(url) != normalize(self.start):
             self.redirected_from = self.start
             self._set_start(url)
+
+    def _widen_scope(self) -> None:
+        """Move the crawl bound up one folder when the start URL is a page without a trailing slash.
+
+        dev.epicgames.com/.../unreal-engine redirects to .../unreal-engine/unreal-engine-5-8-documentation,
+        whose links all point to siblings under .../unreal-engine/.
+        """
+        if urlparse(self.start).path.endswith("/"):
+            return
+        parent = self.prefix.rstrip("/").rsplit("/", 1)[0] + "/"
+        if len(parent) > len(self.origin) + 1:  # never widen to the whole site
+            self.prefix = parent
+            self.widened = True
 
     def _meta(self, **extra):
         m = self.record.metadata()
@@ -244,8 +260,10 @@ class SiteCrawler:
                 continue
             self.save_page(url, resp)
             soup = BeautifulSoup(resp.text, "lxml")
-            for a in soup.find_all("a", href=True):
-                nxt = normalize(urljoin(resp.url, a["href"]))
+            links = [normalize(urljoin(resp.url, a["href"])) for a in soup.find_all("a", href=True)]
+            if fetched == 1 and not any(in_scope(u, self.prefix) and u not in seen for u in links):
+                self._widen_scope()  # start page is a leaf: its siblings are the docs
+            for nxt in links:
                 if nxt not in seen and in_scope(nxt, self.prefix):
                     seen.add(nxt)
                     queue.append(nxt)
@@ -278,6 +296,8 @@ class SiteCrawler:
         msg = f"{len(self.written)} pages via {self.strategy}"
         if self.redirected_from:
             msg += f" from {self.start} (redirected)"
+        if self.widened:
+            msg += f", widened to {self.prefix}"
         if self.capped:
             msg += f" (capped at {self.ctx.max_pages})"
         if self.failed_urls:

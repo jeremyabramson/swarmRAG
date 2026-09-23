@@ -38,7 +38,7 @@ class HelperTests(unittest.TestCase):
         p = "https://www.argos-sim.info/"
         for url in ["https://www.argos-sim.info/forum/viewtopic.php?t=5", "https://www.argos-sim.info/cdn-cgi/l/email-protection",
                     "https://w.org/pmwiki.php?n=Main.Home&action=edit", "https://w.org/index.php?title=X&oldid=12",
-                    "https://www.argos-sim.info/login"]:
+                    "https://www.argos-sim.info/login", "https://w.org/page?lang=zh-CN"]:
             self.assertFalse(site.in_scope(url, "https://w.org/" if "w.org" in url else p), url)
         self.assertTrue(site.in_scope("https://w.org/pmwiki.php?n=Main.Home&action=view", "https://w.org/"))
         self.assertTrue(site.in_scope("https://www.argos-sim.info/user_manual.php", p))
@@ -80,6 +80,26 @@ class CrawlStrategyTests(unittest.TestCase):
         self.assertEqual((res.status, len(res.files)), ("ok", 3), res.message)
         self.assertIn("link crawl", res.message)
         self.assertNotIn("https://dev.x.com/community", f.requested)
+
+    def test_leaf_start_page_widens_to_parent_folder(self):
+        f = FakeFetcher()
+        f.add("https://dev.x.com/doc/ue/ue-5-8-documentation",
+              html_page("UE 5.8", links=["/doc/ue/whats-new", "/doc/ue/basics", "/community"]))
+        f.add("https://dev.x.com/doc/ue/whats-new", html_page("New"))
+        f.add("https://dev.x.com/doc/ue/basics", html_page("Basics"))
+        ctx, _ = context(f)
+        res = site.crawl(record("https://dev.x.com/doc/ue/ue-5-8-documentation", "Documentation-site crawl"), ctx)
+        self.assertEqual((res.status, len(res.files)), ("ok", 3), res.message)
+        self.assertIn("widened to https://dev.x.com/doc/ue/", res.message)
+        self.assertNotIn("https://dev.x.com/community", f.requested)
+
+    def test_widening_never_reaches_site_root(self):
+        f = FakeFetcher()
+        f.add("https://a.io/docs", html_page("Docs", links=["/blog/x", "/about"]))
+        ctx, _ = context(f)
+        res = site.crawl(record("https://a.io/docs", "Documentation-site crawl"), ctx)
+        self.assertEqual(len(res.files), 1)
+        self.assertNotIn("https://a.io/blog/x", f.requested)
 
     def test_sitemap_index_and_scope(self):
         f = FakeFetcher()
