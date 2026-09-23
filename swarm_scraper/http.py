@@ -141,6 +141,8 @@ class Fetcher:
             self._wait(host)
             try:
                 r = self.session.get(url, headers=hdrs, timeout=self.timeout, allow_redirects=True)
+            except requests.exceptions.SSLError as exc:  # a broken certificate chain will not fix itself
+                raise FetchError(f"SSL certificate verification failed for {url}: {exc}") from exc
             except requests.RequestException as exc:
                 last_exc = exc
             else:

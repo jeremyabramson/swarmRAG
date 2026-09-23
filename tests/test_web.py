@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from swarm_scraper.convert import html_to_markdown, is_empty_shell, pdf_to_text
+from swarm_scraper.convert import html_to_markdown, is_empty_shell, meta_refresh_url, pdf_to_text
 from swarm_scraper.handlers import web
 from tests.helpers import FakeFetcher, context, html_page, make_pdf, read_doc, record
 
@@ -32,6 +32,13 @@ class ConvertTests(unittest.TestCase):
         self.assertIn("https://docs.px4.io/main/en/flight_modes/altitude", md)
         self.assertIn("https://docs.px4.io/main/en/sim/gazebo", md)
         self.assertNotIn("](https://docs.px4.io/flight_modes", md)
+
+    def test_meta_refresh_url(self):
+        self.assertEqual(meta_refresh_url('<meta http-equiv="refresh" content="0; url=main/">', "https://d.org/"),
+                         "https://d.org/main/")
+        self.assertEqual(meta_refresh_url("<meta http-equiv='REFRESH' content=\"5;URL='/x/y.html'\">", "https://d.org/a/"),
+                         "https://d.org/x/y.html")
+        self.assertIsNone(meta_refresh_url(html_page("No refresh"), "https://d.org/"))
 
     def test_empty_shell_detection(self):
         self.assertTrue(is_empty_shell("<html><body><nav>" + "menu " * 50 + "</nav><main> </main></body></html>"))

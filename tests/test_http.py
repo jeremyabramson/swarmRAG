@@ -36,6 +36,20 @@ class FetcherTests(unittest.TestCase):
         self.assertEqual(f.get("https://x.org/a").text, "ok")
         self.assertEqual(len(s.calls), 3)
 
+    def test_ssl_error_not_retried(self):
+        s = FakeSession([requests.exceptions.SSLError("unable to get local issuer certificate")] * 4)
+        f = Fetcher(delay=0, retries=3, respect_robots=False, session=s)
+        with self.assertRaises(FetchError) as cm:
+            f.get("https://moos-ivp.org/")
+        self.assertIn("SSL certificate", str(cm.exception))
+        self.assertEqual(len(s.calls), 1)
+
+    def test_get_ok_error_carries_status(self):
+        f = Fetcher(delay=0, retries=0, respect_robots=False, session=FakeSession([FakeResp(403)]))
+        with self.assertRaises(FetchError) as cm:
+            f.get_ok("https://x.org/a")
+        self.assertEqual(cm.exception.status, 403)
+
     def test_gives_up(self):
         s = FakeSession([FakeResp(500)] * 3)
         f = Fetcher(delay=0, retries=2, respect_robots=False, session=s)

@@ -1,5 +1,6 @@
 import unittest
 
+from swarm_scraper.dispatch import process
 from swarm_scraper.handlers import site
 from tests.helpers import FakeFetcher, context, html_page, read_doc, record
 
@@ -121,6 +122,54 @@ class CrawlStrategyTests(unittest.TestCase):
         res = site.crawl(record("https://docs.x.org/", "Documentation-site crawl"), ctx)
         self.assertEqual((res.status, len(res.files)), ("partial", 1))
         self.assertIn("capped at 3", res.message)
+
+    def test_follows_redirect_to_new_host_and_meta_refresh(self):
+        # autowarefoundation.github.io/autoware-documentation/ -> docs.autoware.org/ -> (meta refresh) main/
+        f = FakeFetcher()
+        f.redirect("https://org.github.io/proj-docs/", "https://docs.proj.org/")
+        f.add("https://docs.proj.org/", '<html><head><meta http-equiv="refresh" content="0; url=main/"></head>'
+                                        '<body>Redirecting to <a href="main/">main/</a>...</body></html>')
+        f.add("https://docs.proj.org/main/", html_page("Home", links=["guide/", "/other/x.html"]))
+        f.add("https://docs.proj.org/main/guide/", html_page("Guide"))
+        ctx, _ = context(f)
+        res = site.crawl(record("https://org.github.io/proj-docs/", "Documentation-site crawl"), ctx)
+        self.assertEqual(res.status, "ok", res.message)
+        self.assertEqual(len(res.files), 2)
+        self.assertIn("redirected", res.message)
+        meta, body = read_doc(res.files[0])
+        self.assertEqual(meta["crawl_root"], "https://docs.proj.org/main/")
+        self.assertNotIn("Redirecting", body)
+        self.assertNotIn("https://docs.proj.org/other/x.html", f.requested)
+
+    def test_redirect_stub_not_saved(self):
+        f = FakeFetcher()
+        f.add("https://a.io/docs/", html_page("Home", links=["old.html", "new.html"]))
+        f.add("https://a.io/docs/old.html", '<html><head><meta http-equiv="Refresh" content="0;URL=\'new.html\'">'
+                                            "</head><body>" + "This page has moved to a new location. " * 3
+                                            + "</body></html>")
+        f.add("https://a.io/docs/new.html", html_page("New"))
+        ctx, _ = context(f)
+        res = site.crawl(record("https://a.io/docs/", "Documentation-site crawl"), ctx)
+        self.assertEqual(sorted(p.rsplit("/", 1)[1] for p in res.files), ["index.md", "new.md"])
+
+    def test_start_page_problems(self):
+        spa = ('<html><head><script src="main.js"></script></head><body><app-root></app-root>'
+               "<script>boot()</script></body></html>")
+        cases = {  # Robotarium (Angular), Raspberry Pi (403), Skydio (robots), Clearpath (moved)
+            "https://spa.io/": ("manual", "JavaScript-rendered"),
+            "https://forbidden.io/docs/": ("manual", "403"),
+            "https://blocked.io/docs/": ("manual", "robots.txt"),
+            "https://moved.io/docs/": ("error", "start page returned HTTP 404"),
+        }
+        f = FakeFetcher(disallow=("https://blocked.io",))
+        f.add("https://spa.io/", spa)
+        f.add("https://forbidden.io/docs/", "Just a moment...", status=403)
+        for i, (url, (status, text)) in enumerate(cases.items()):
+            ctx, root = context(f)
+            res = process(record(url, "Documentation-site crawl", doc_id=f"D{i}"), ctx)
+            self.assertEqual(res.status, status, (url, res.message))
+            self.assertIn(text, res.message)
+            self.assertEqual((root / "manual_queue.csv").exists(), status == "manual")
 
     def test_nothing_found_is_error(self):
         ctx, _ = context(FakeFetcher())

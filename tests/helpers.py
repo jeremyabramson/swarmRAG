@@ -21,6 +21,11 @@ class FakeFetcher(Fetcher):
         self.routes = dict(routes or {})
         self.disallow = disallow
         self.requested: list[str] = []
+        self.redirects: dict[str, str] = {}
+
+    def redirect(self, src, dst):
+        """Serve dst's response when src is requested, with the final URL set to dst (like requests)."""
+        self.redirects[src] = dst
 
     def add(self, url, body, status=200, ctype="text/html"):
         if isinstance(body, (dict, list)):
@@ -34,6 +39,7 @@ class FakeFetcher(Fetcher):
         if any(url.startswith(d) for d in self.disallow):
             raise RobotsDisallowed(f"robots.txt disallows {url}")
         self.requested.append(url)
+        url = self.redirects.get(url, url)
         if url not in self.routes:
             return Response(url=url, status=404, content=b"not found", headers={"Content-Type": "text/plain"})
         status, body, hdrs = self.routes[url]

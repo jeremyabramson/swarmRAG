@@ -62,6 +62,16 @@ def html_title(html: str) -> str:
     return h1.get_text(strip=True) if h1 else ""
 
 
+def meta_refresh_url(html: str, base: str) -> str | None:
+    """Target of a <meta http-equiv="refresh"> redirect stub, made absolute, or None."""
+    if "refresh" not in html[:20_000].lower():
+        return None
+    soup = BeautifulSoup(html[:20_000], "lxml")
+    tag = soup.find("meta", attrs={"http-equiv": re.compile(r"^refresh$", re.I)})
+    m = re.search(r"url\s*=\s*['\"]?([^'\";]+)", (tag.get("content") or "") if tag else "", re.I)
+    return urljoin(base, m.group(1).strip()) if m else None
+
+
 def is_empty_shell(html: str) -> bool:
     """True when the page has a main-content element but it holds no text.
 

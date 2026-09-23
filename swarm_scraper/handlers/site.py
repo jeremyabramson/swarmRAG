@@ -10,8 +10,8 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from ..convert import html_title, html_to_markdown, is_empty_shell
-from ..http import FetchError
+from ..convert import html_title, html_to_markdown, is_empty_shell, meta_refresh_url
+from ..http import FetchError, RobotsDisallowed
 from ..output import DocResult, now_iso, slugify
 from . import Context
 
@@ -55,23 +55,75 @@ def page_filename(url: str, prefix: str) -> str:
     return "/".join(slugify(seg, 80) for seg in rel.split("/")) + ".md"
 
 
+def looks_js_rendered(html: str) -> bool:
+    """A page whose body has no text and no links: the content is built by JavaScript."""
+    soup = BeautifulSoup(html, "lxml")
+    body = soup.body
+    if body is None:
+        return True
+    for tag in body(["script", "style", "noscript"]):
+        tag.decompose()
+    return len(body.get_text(strip=True)) < 50 and not body.find("a", href=True)
+
+
 class SiteCrawler:
     def __init__(self, record, ctx: Context):
         self.record, self.ctx = record, ctx
-        self.start = record.url
-        self.prefix = scope_prefix(record.url)
-        p = urlparse(record.url)
-        self.origin = f"{p.scheme}://{p.netloc}"
+        self._set_start(record.url)
         self.out_dir = ctx.store.base_path(record)
         self.written: list[str] = []
         self.failures = 0
         self.skipped = 0            # empty shells and duplicate bodies
         self.capped = False         # stopped at max_pages with pages left
         self._hashes: set[str] = set()
+        self.redirected_from = ""
+        self.start_problem = ""     # why the start page itself gave nothing, for the error message
+
+    def _set_start(self, url: str) -> None:
+        self.start = url
+        self.prefix = scope_prefix(url)
+        p = urlparse(url)
+        self.origin = f"{p.scheme}://{p.netloc}"
+
+    def resolve_start(self) -> None:
+        """Follow HTTP and meta-refresh redirects from the inventory URL and re-scope the crawl.
+
+        Documentation often moves (github.io -> custom domain, / -> /main/); crawling the old
+        scope then finds nothing but a "Redirecting..." stub.
+        """
+        url = self.start
+        for _ in range(3):
+            try:
+                resp = self.ctx.fetcher.get(url)  # RobotsDisallowed propagates: dispatch queues it
+            except RobotsDisallowed:
+                raise
+            except FetchError as exc:
+                self.start_problem = str(exc)
+                return
+            if resp.status in (401, 403):  # bot protection: dispatch queues it for manual collection
+                raise FetchError(f"HTTP {resp.status} for {url}", status=resp.status)
+            if not resp.ok:
+                self.start_problem = f"start page returned HTTP {resp.status}"
+                return
+            final = resp.url
+            if "html" in resp.content_type:
+                refresh = meta_refresh_url(resp.text, final)
+                if refresh:
+                    final = refresh
+                elif looks_js_rendered(resp.text):
+                    self.start_problem = "start page has no text or links (JavaScript-rendered site)"
+            if normalize(final) == normalize(url):
+                break
+            url = final
+        if normalize(url) != normalize(self.start):
+            self.redirected_from = self.start
+            self._set_start(url)
 
     def _meta(self, **extra):
         m = self.record.metadata()
         m["retrieved_at"] = now_iso()
+        if self.redirected_from:
+            m["crawl_root"] = self.start
         m.update(extra)
         return m
 
@@ -132,7 +184,7 @@ class SiteCrawler:
     def save_page(self, url: str, resp) -> None:
         name = page_filename(url, self.prefix)
         if "html" in resp.content_type:
-            if is_empty_shell(resp.text):
+            if is_empty_shell(resp.text) or (len(resp.content) < 5000 and meta_refresh_url(resp.text, url)):
                 self.skipped += 1
                 return
             body = html_to_markdown(resp.text, url=url)
@@ -184,6 +236,7 @@ class SiteCrawler:
 
     def run(self) -> DocResult:
         self.strategy = ""
+        self.resolve_start()
         if self.llms_full():
             self.strategy = "llms-full.txt"
         else:
@@ -197,9 +250,16 @@ class SiteCrawler:
                 else:
                     self.bfs()
         if not self.written:
-            return DocResult(self.record.doc_id, "error", message=f"No pages saved ({self.strategy})")
+            detail = f"; {self.start_problem}" if self.start_problem else ""
+            if "JavaScript" in self.start_problem:
+                reason = f"No pages saved: {self.start_problem}; needs a browser or manual collection"
+                self.ctx.store.add_manual(self.record, reason)
+                return DocResult(self.record.doc_id, "manual", message=reason)
+            return DocResult(self.record.doc_id, "error", message=f"No pages saved ({self.strategy}{detail})")
         status = "partial" if (self.failures or self.capped) else "ok"
         msg = f"{len(self.written)} pages via {self.strategy}"
+        if self.redirected_from:
+            msg += f" from {self.start} (redirected)"
         if self.capped:
             msg += f" (capped at {self.ctx.max_pages})"
         if self.failures:
