@@ -26,6 +26,24 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(site.page_filename("https://a.io/docs/Guide/Setup.html", p), "guide/setup.md")
 
 
+    def test_query_strings_kept_for_page_selection(self):
+        self.assertEqual(site.normalize("https://w.org/pmwiki.php?n=Main.Home#top"), "https://w.org/pmwiki.php?n=Main.Home")
+        self.assertEqual(site.normalize("https://a.io/p?utm_source=x&b=2&a=1"), "https://a.io/p?a=1&b=2")
+        self.assertEqual(site.page_filename("https://w.org/wiki/pmwiki.php?n=Main.Home", "https://w.org/wiki/"),
+                         "pmwiki--nmainhome.md")
+        self.assertNotEqual(site.page_filename("https://w.org/p.php?n=A", "https://w.org/"),
+                            site.page_filename("https://w.org/p.php?n=B", "https://w.org/"))
+
+    def test_scope_excludes_site_furniture(self):
+        p = "https://www.argos-sim.info/"
+        for url in ["https://www.argos-sim.info/forum/viewtopic.php?t=5", "https://www.argos-sim.info/cdn-cgi/l/email-protection",
+                    "https://w.org/pmwiki.php?n=Main.Home&action=edit", "https://w.org/index.php?title=X&oldid=12",
+                    "https://www.argos-sim.info/login"]:
+            self.assertFalse(site.in_scope(url, "https://w.org/" if "w.org" in url else p), url)
+        self.assertTrue(site.in_scope("https://w.org/pmwiki.php?n=Main.Home&action=view", "https://w.org/"))
+        self.assertTrue(site.in_scope("https://www.argos-sim.info/user_manual.php", p))
+
+
 class CrawlStrategyTests(unittest.TestCase):
     def test_llms_full_wins(self):
         f = FakeFetcher()
@@ -170,6 +188,18 @@ class CrawlStrategyTests(unittest.TestCase):
             self.assertEqual(res.status, status, (url, res.message))
             self.assertIn(text, res.message)
             self.assertEqual((root / "manual_queue.csv").exists(), status == "manual")
+
+    def test_wiki_pages_by_query_crawled_separately(self):
+        base = "https://oceanai.mit.edu/moos-ivp/pmwiki/pmwiki.php"
+        f = FakeFetcher()
+        f.add(base + "?n=Main.HomePage", html_page("Home", links=["pmwiki.php?n=Helm.Intro", "pmwiki.php?n=IvP.Behaviors",
+                                                                 "pmwiki.php?n=Helm.Intro&action=edit"]))
+        f.add(base + "?n=Helm.Intro", html_page("Helm intro"))
+        f.add(base + "?n=IvP.Behaviors", html_page("Behaviors"))
+        ctx, _ = context(f)
+        res = site.crawl(record(base + "?n=Main.HomePage", "Documentation-site crawl"), ctx)
+        self.assertEqual((res.status, len(res.files)), ("ok", 3), res.message)
+        self.assertFalse([u for u in f.requested if "action=edit" in u])
 
     def test_nothing_found_is_error(self):
         ctx, _ = context(FakeFetcher())

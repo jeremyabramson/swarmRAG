@@ -6,7 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import deque
 from pathlib import PurePosixPath
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import parse_qsl, urldefrag, urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -20,7 +20,12 @@ SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".css", ".
 SITEMAP_NS = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 MD_LINK = re.compile(r"\[[^\]]*\]\((https?://[^)\s]+)\)")
 # Generated pages with no prose: Sphinx source viewers, indexes, search, and asset folders
-SKIP_PATH = re.compile(r"/(_modules|_sources|_static|_images|_downloads)/|/(genindex|py-modindex|search)(\.html)?$")
+# and site furniture (forums, logins, Cloudflare endpoints)
+SKIP_PATH = re.compile(r"/(_modules|_sources|_static|_images|_downloads)/|/(genindex|py-modindex|search)(\.html)?$"
+                       r"|/(forums?|cdn-cgi|login|signin|signup|register|wp-admin|wp-json|feed)(/|$)", re.I)
+# Wiki and CMS views of a page that are not the page itself (edit, history, diff, print)
+SKIP_QUERY = re.compile(r"(^|&)(action=(?!view)|oldid=|diff=|printable=|do=|redirect=no|share=|replytocom=)", re.I)
+TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "ref_src")
 
 
 def scope_prefix(url: str) -> str:
@@ -40,19 +45,29 @@ def scope_prefix(url: str) -> str:
 
 
 def normalize(url: str) -> str:
-    url = urldefrag(url)[0].split("?")[0]
-    return url
+    """Drop the fragment and tracking parameters; keep (sorted) query strings that select a page."""
+    url = urldefrag(url)[0]
+    p = urlparse(url)
+    if not p.query:
+        return url
+    q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if not k.lower().startswith(TRACKING_PARAMS)]
+    return p._replace(query=urlencode(sorted(q))).geturl()
 
 
 def in_scope(url: str, prefix: str) -> bool:
     url = normalize(url)
-    return url.startswith(prefix) and not url.lower().endswith(SKIP_EXT) and not SKIP_PATH.search(url)
+    p = urlparse(url)
+    return (url.startswith(prefix) and not p.path.lower().endswith(SKIP_EXT)
+            and not SKIP_PATH.search(p.path) and not SKIP_QUERY.search(p.query))
 
 
 def page_filename(url: str, prefix: str) -> str:
-    rel = normalize(url)[len(prefix):].strip("/")
-    rel = re.sub(r"\.(html?|php|aspx)$", "", rel) or "index"
-    return "/".join(slugify(seg, 80) for seg in rel.split("/")) + ".md"
+    rel, _, query = normalize(url)[len(prefix):].partition("?")
+    rel = re.sub(r"\.(html?|php|aspx)$", "", rel.strip("/")) or "index"
+    segs = [slugify(seg, 80) for seg in rel.split("/")]
+    if query:  # pmwiki.php?n=Main.Page and friends: the query names the page
+        segs[-1] += "--" + slugify(query, 80)
+    return "/".join(segs) + ".md"
 
 
 def looks_js_rendered(html: str) -> bool:
@@ -72,7 +87,7 @@ class SiteCrawler:
         self._set_start(record.url)
         self.out_dir = ctx.store.base_path(record)
         self.written: list[str] = []
-        self.failures = 0
+        self.failed_urls: list[str] = []
         self.skipped = 0            # empty shells and duplicate bodies
         self.capped = False         # stopped at max_pages with pages left
         self._hashes: set[str] = set()
@@ -206,7 +221,7 @@ class SiteCrawler:
         for url in urls[: self.ctx.max_pages]:
             resp = self._try_get(url)
             if resp is None:
-                self.failures += 1
+                self.failed_urls.append(url)
                 continue
             self.save_page(url, resp)
         self.strategy = strategy
@@ -219,7 +234,7 @@ class SiteCrawler:
             resp = self._try_get(url)
             fetched += 1
             if resp is None:
-                self.failures += 1
+                self.failed_urls.append(url)
                 continue
             if "html" not in resp.content_type:
                 self.save_page(url, resp)
@@ -256,14 +271,14 @@ class SiteCrawler:
                 self.ctx.store.add_manual(self.record, reason)
                 return DocResult(self.record.doc_id, "manual", message=reason)
             return DocResult(self.record.doc_id, "error", message=f"No pages saved ({self.strategy}{detail})")
-        status = "partial" if (self.failures or self.capped) else "ok"
+        status = "partial" if (self.failed_urls or self.capped) else "ok"
         msg = f"{len(self.written)} pages via {self.strategy}"
         if self.redirected_from:
             msg += f" from {self.start} (redirected)"
         if self.capped:
             msg += f" (capped at {self.ctx.max_pages})"
-        if self.failures:
-            msg += f", {self.failures} failed"
+        if self.failed_urls:
+            msg += f", {len(self.failed_urls)} failed (e.g. {', '.join(self.failed_urls[:3])})"
         if self.skipped:
             msg += f", {self.skipped} empty or duplicate skipped"
         return DocResult(self.record.doc_id, status, self.written, msg)
