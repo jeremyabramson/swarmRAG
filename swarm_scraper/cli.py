@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections import Counter
+import threading
+import time
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from itertools import chain, zip_longest
+from urllib.parse import urlparse
 
 from .dispatch import process
 from .handlers import Context
@@ -27,11 +32,21 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true", help="list what would be fetched, fetch nothing")
     run.add_argument("--force", action="store_true", help="re-fetch documents already marked ok")
     run.add_argument("--delay", type=float, default=1.0, help="seconds between requests to one host")
+    run.add_argument("--workers", type=int, default=4,
+                     help="documents fetched in parallel; the per-host delay still applies (default: 4)")
     run.add_argument("--max-pages", type=int, default=200, help="page cap per documentation-site crawl")
     run.add_argument("--max-repo-files", type=int, default=400, help="file cap per repository docs folder")
     run.add_argument("--no-pdf", action="store_true", help="do not keep original PDFs, only extracted text")
     run.add_argument("--ignore-robots", action="store_true", help="do not check robots.txt (not recommended)")
     return p
+
+
+def interleave_by_host(records: list) -> list:
+    """Order records round-robin by host so parallel workers start on different sites."""
+    groups: dict[str, list] = defaultdict(list)
+    for r in records:
+        groups[urlparse(r.url).netloc.lower()].append(r)
+    return [r for r in chain.from_iterable(zip_longest(*groups.values())) if r is not None]
 
 
 def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
@@ -57,14 +72,36 @@ def main(argv: list[str] | None = None, fetcher: Fetcher | None = None) -> int:
                   store=store, max_pages=args.max_pages, max_repo_files=args.max_repo_files,
                   keep_pdf=not args.no_pdf)
     tally = Counter()
-    for i, r in enumerate(records, 1):
-        print(f"[{i}/{len(records)}] {r.doc_id} {r.technology}: {r.title}", flush=True)
+    print_lock = threading.Lock()
+    started = time.monotonic()
+
+    def run_one(r):
+        t0 = time.monotonic()
         result = process(r, ctx)
         store.record_result(result)
-        tally[result.status] += 1
-        if result.status != "ok":
-            print(f"    -> {result.status}: {result.message.splitlines()[0] if result.message else ''}")
-    print("Summary: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
+        with print_lock:
+            tally[result.status] += 1
+            done = sum(tally.values())
+            line = f"[{done}/{len(records)}] {r.doc_id} {result.status:<7} {time.monotonic() - t0:5.1f}s  " \
+                   f"{r.technology}: {r.title}"
+            if result.status != "ok" and result.message:
+                line += f"\n    -> {result.message.splitlines()[0]}"
+            elif result.message:
+                line += f"  ({result.message.splitlines()[0]})"
+            print(line, flush=True)
+
+    workers = max(1, args.workers)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(run_one, r) for r in (interleave_by_host(records) if workers > 1 else records)]
+        try:
+            for fut in as_completed(futures):
+                fut.result()
+        except KeyboardInterrupt:
+            pool.shutdown(wait=False, cancel_futures=True)
+            print("Interrupted; documents finished so far are in the manifest.")
+            raise
+    print("Summary: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items()))
+          + f" in {time.monotonic() - started:.0f}s")
     print(f"Manifest: {store.manifest_path}")
     if store.manual_path.exists():
         print(f"Manual collection queue: {store.manual_path}")

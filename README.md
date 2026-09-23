@@ -25,6 +25,10 @@ python -m swarm_scraper --max-priority 2 --confirmed-only
 
 Runs are resumable: documents already saved successfully are skipped unless you pass `--force`.
 
+Documents are fetched in parallel (`--workers 4` by default, `--workers 1` for a sequential run).
+The per-host delay is shared by all workers, so running in parallel speeds things up across sites
+without sending more requests to any one site.
+
 ## Output
 
 ```
@@ -60,7 +64,8 @@ Rows whose Access is Gated, Internal, or Subscription go to the manual queue wha
 
 ## Politeness
 
-One request per second per host by default (three seconds for arXiv, per its guidance),
+One request per second per host by default (three seconds for arXiv, per its guidance;
+a quarter second for the raw.githubusercontent.com CDN), shared across parallel workers,
 retries with backoff on 429 and 5xx responses, and robots.txt checks (skip with
 `--ignore-robots` only where you have permission). Check each site's terms of use before
 bulk collection, especially vendor documentation.

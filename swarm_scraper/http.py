@@ -6,6 +6,7 @@ substitute a fake one.
 from __future__ import annotations
 
 import os
+import threading
 import time
 import urllib.robotparser
 from dataclasses import dataclass, field
@@ -54,7 +55,7 @@ class Response:
 class Fetcher:
     """Polite HTTP client.
 
-    - waits at least `delay` seconds between requests to the same host
+    - waits at least `delay` seconds between requests to the same host, across threads
     - retries on connection errors, 429, and 5xx with exponential backoff
     - honours robots.txt unless `respect_robots` is False
     - sends a GitHub token (GITHUB_TOKEN) to api.github.com if present
@@ -74,26 +75,32 @@ class Fetcher:
         self.session = session or requests.Session()
         self.session.headers["User-Agent"] = ua
         self.github_token = github_token if github_token is not None else os.environ.get("GITHUB_TOKEN")
-        self._last_hit: dict[str, float] = {}
-        # hosts that publish stricter crawl delays
-        self.host_delays = {"arxiv.org": 3.0, "export.arxiv.org": 3.0}
+        self._next_slot: dict[str, float] = {}
+        # hosts that publish stricter crawl delays (arXiv), or CDNs built for bulk reads
+        self.host_delays = {"arxiv.org": 3.0, "export.arxiv.org": 3.0,
+                            "raw.githubusercontent.com": min(delay, 0.25)}
         self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._slot_lock = threading.Lock()
+        self._robots_locks: dict[str, threading.Lock] = {}
 
     # -- robots ---------------------------------------------------------
     def _robots_for(self, url: str):
         parts = urlparse(url)
         origin = f"{parts.scheme}://{parts.netloc}"
-        if origin not in self._robots:
-            rp = urllib.robotparser.RobotFileParser()
-            try:
-                resp = self._raw_get(origin + "/robots.txt", check_robots=False)
-                if resp.status == 200:
-                    rp.parse(resp.text.splitlines())
-                else:
-                    rp = None  # no robots file: allowed
-            except FetchError:
-                rp = None
-            self._robots[origin] = rp
+        with self._slot_lock:
+            lock = self._robots_locks.setdefault(origin, threading.Lock())
+        with lock:  # one robots.txt fetch per origin even with several threads
+            if origin not in self._robots:
+                rp = urllib.robotparser.RobotFileParser()
+                try:
+                    resp = self._raw_get(origin + "/robots.txt", check_robots=False)
+                    if resp.status == 200:
+                        rp.parse(resp.text.splitlines())
+                    else:
+                        rp = None  # no robots file: allowed
+                except FetchError:
+                    rp = None
+                self._robots[origin] = rp
         return self._robots[origin]
 
     def allowed(self, url: str) -> bool:
@@ -107,13 +114,18 @@ class Fetcher:
 
     # -- fetching -------------------------------------------------------
     def _wait(self, host: str):
-        last = self._last_hit.get(host)
-        if last is not None:
-            gap = time.monotonic() - last
-            wanted = self.host_delays.get(host, self.delay)
-            if gap < wanted:
-                time.sleep(wanted - gap)
-        self._last_hit[host] = time.monotonic()
+        """Reserve the next request slot for `host`, then sleep until it arrives.
+
+        Slots are handed out under a lock, so concurrent threads hitting one host
+        queue up `delay` seconds apart while threads on other hosts are not blocked.
+        """
+        wanted = self.host_delays.get(host, self.delay)
+        with self._slot_lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot.get(host, now))
+            self._next_slot[host] = slot + wanted
+        if slot > now:
+            time.sleep(slot - now)
 
     def _raw_get(self, url: str, headers: dict | None = None, check_robots: bool = True) -> Response:
         if check_robots and not self.allowed(url):
