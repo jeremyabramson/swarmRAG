@@ -59,11 +59,13 @@ class Fetcher:
 
     - waits at least `delay` seconds between requests to the same host, across threads
     - retries on connection errors, 429, and 5xx with exponential backoff
+    - gives up on a host for the rest of the run once it times out or refuses connections
+      through every retry, so one dead site costs one timeout cycle rather than one per page
     - honours robots.txt unless `respect_robots` is False
     - sends a GitHub token (GITHUB_TOKEN) to api.github.com if present
     """
 
-    def __init__(self, delay: float = 1.0, retries: int = 3, timeout: float = 30.0,
+    def __init__(self, delay: float = 1.0, retries: int = 3, timeout: float | tuple = (10.0, 30.0),
                  respect_robots: bool = True, user_agent: str | None = None,
                  github_token: str | None = None, session: requests.Session | None = None):
         self.delay = delay
@@ -84,6 +86,7 @@ class Fetcher:
         self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
         self._slot_lock = threading.Lock()
         self._robots_locks: dict[str, threading.Lock] = {}
+        self._dead_hosts: dict[str, str] = {}
 
     # -- robots ---------------------------------------------------------
     def _robots_for(self, url: str):
@@ -95,7 +98,7 @@ class Fetcher:
             if origin not in self._robots:
                 rp = urllib.robotparser.RobotFileParser()
                 try:
-                    resp = self._raw_get(origin + "/robots.txt", check_robots=False)
+                    resp = self._raw_get(origin + "/robots.txt", check_robots=False, retries=min(1, self.retries))
                     if resp.status == 200:
                         rp.parse(resp.text.splitlines())
                     else:
@@ -129,15 +132,21 @@ class Fetcher:
         if slot > now:
             time.sleep(slot - now)
 
-    def _raw_get(self, url: str, headers: dict | None = None, check_robots: bool = True) -> Response:
+    def _raw_get(self, url: str, headers: dict | None = None, check_robots: bool = True,
+                 retries: int | None = None) -> Response:
+        host = urlparse(url).netloc
+        if host in self._dead_hosts:
+            raise FetchError(f"Failed to fetch {url}: {host} unreachable earlier in this run ({self._dead_hosts[host]})")
         if check_robots and not self.allowed(url):
             raise RobotsDisallowed(f"robots.txt disallows {url}")
-        host = urlparse(url).netloc
+        if host in self._dead_hosts:  # robots.txt fetch just found it dead
+            raise FetchError(f"Failed to fetch {url}: {host} unreachable ({self._dead_hosts[host]})")
+        retries = self.retries if retries is None else retries
         hdrs = dict(headers or {})
         if host == "api.github.com" and self.github_token:
             hdrs.setdefault("Authorization", f"Bearer {self.github_token}")
         last_exc = None
-        for attempt in range(self.retries + 1):
+        for attempt in range(retries + 1):
             self._wait(host)
             try:
                 r = self.session.get(url, headers=hdrs, timeout=self.timeout, allow_redirects=True)
@@ -153,8 +162,11 @@ class Fetcher:
                         time.sleep(min(int(retry_after), 120))
                 else:
                     return Response(url=r.url, status=r.status_code, content=r.content, headers=dict(r.headers))
-            if attempt < self.retries:
+            if attempt < retries:
                 time.sleep(2 ** attempt)
+        if isinstance(last_exc, (requests.Timeout, requests.ConnectionError)):
+            with self._slot_lock:
+                self._dead_hosts[host] = type(last_exc).__name__
         raise FetchError(f"Failed to fetch {url}: {last_exc}")
 
     def get(self, url: str, headers: dict | None = None) -> Response:

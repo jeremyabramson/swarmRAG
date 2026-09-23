@@ -50,6 +50,24 @@ class FetcherTests(unittest.TestCase):
             f.get_ok("https://x.org/a")
         self.assertEqual(cm.exception.status, 403)
 
+    def test_unreachable_host_fails_fast_afterwards(self):
+        s = FakeSession([requests.Timeout("read timed out")] * 6 + [FakeResp(200, "other host")])
+        f = Fetcher(delay=0, retries=2, session=s)
+        with self.assertRaises(FetchError):  # robots.txt: 2 tries, then the page itself: fails fast
+            f.get("https://dead.example/a")
+        self.assertEqual(len(s.calls), 2)
+        with self.assertRaises(FetchError) as cm:
+            f.get("https://dead.example/b")
+        self.assertIn("unreachable", str(cm.exception))
+        self.assertEqual(len(s.calls), 2)
+
+    def test_http_errors_do_not_mark_host_dead(self):
+        s = FakeSession([FakeResp(503), FakeResp(503), FakeResp(200, "back")])
+        f = Fetcher(delay=0, retries=1, respect_robots=False, session=s)
+        with self.assertRaises(FetchError):
+            f.get("https://busy.example/a")
+        self.assertEqual(f.get("https://busy.example/a").text, "back")
+
     def test_gives_up(self):
         s = FakeSession([FakeResp(500)] * 3)
         f = Fetcher(delay=0, retries=2, respect_robots=False, session=s)
