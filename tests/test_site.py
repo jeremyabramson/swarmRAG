@@ -67,6 +67,20 @@ class CrawlStrategyTests(unittest.TestCase):
         self.assertEqual(len(res.files), 2)
         self.assertNotIn("https://elsewhere.com/a", f.requested)
 
+    def test_site_wide_llms_index_limited_to_docs_folder(self):
+        # dev.epicgames.com/llms.txt lists the whole site; the Unreal docs live under /documentation/...
+        f = FakeFetcher()
+        f.add("https://dev.x.com/llms.txt", "# Site\n- [Docs](https://dev.x.com/docs)\n- [Community](https://dev.x.com/community)\n",
+              ctype="text/plain")
+        f.add("https://dev.x.com/documentation/ue/", html_page("UE docs", links=["a", "b"]))
+        f.add("https://dev.x.com/documentation/ue/a", html_page("A"))
+        f.add("https://dev.x.com/documentation/ue/b", html_page("B"))
+        ctx, _ = context(f)
+        res = site.crawl(record("https://dev.x.com/documentation/ue/", "Documentation-site crawl"), ctx)
+        self.assertEqual((res.status, len(res.files)), ("ok", 3), res.message)
+        self.assertIn("link crawl", res.message)
+        self.assertNotIn("https://dev.x.com/community", f.requested)
+
     def test_sitemap_index_and_scope(self):
         f = FakeFetcher()
         f.add("https://docs.x.org/sitemap.xml", INDEX, ctype="application/xml")

@@ -169,6 +169,9 @@ class SiteCrawler:
                 links = [normalize(u) for u in MD_LINK.findall(resp.text)]
                 host = urlparse(self.origin).netloc
                 links = [u for u in links if urlparse(u).netloc == host]
+                if cand == self.origin + "/llms.txt" and self.prefix != self.origin + "/":
+                    # a site-wide index (dev.epicgames.com/llms.txt) mostly points outside the docs folder
+                    links = [u for u in links if in_scope(u, self.prefix)]
                 if links:
                     self.ctx.store.write_markdown(self.out_dir / "_llms-index.md", resp.text,
                                                   self._meta(fetched_url=cand, strategy="llms.txt"))
