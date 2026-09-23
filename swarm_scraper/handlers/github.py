@@ -99,6 +99,16 @@ def readme(record, ctx: Context) -> DocResult:
     return DocResult(record.doc_id, "ok", [str(path)])
 
 
+def _similar_doc_dirs(files: list[str], prefix: str, limit: int = 3) -> list[str]:
+    """Folders holding documentation whose name resembles the missing prefix (for the error message)."""
+    want = [s.lower()[:4] for s in prefix.strip("/").split("/") if s]
+    if not want:
+        return []
+    dirs = {f.rsplit("/", 1)[0] + "/" for f in files if "/" in f and f.lower().endswith(DOC_EXTS)}
+    scored = sorted(((sum(w in d.lower() for w in want), d) for d in dirs), key=lambda t: (-t[0], len(t[1])))
+    return [d for score, d in scored if score == len(want)][:limit]
+
+
 def docs_folder(record, ctx: Context) -> DocResult:
     g = parse_github_url(record.url)
     if g.kind == "blob":
@@ -121,7 +131,11 @@ def docs_folder(record, ctx: Context) -> DocResult:
     truncated = tree.get("truncated", False) or len(picked) > ctx.max_repo_files
     picked = picked[: ctx.max_repo_files]
     if not picked:
-        return DocResult(record.doc_id, "error", message=f"No documentation files under '{prefix or '/'}'")
+        msg = f"No documentation files under '{prefix or '/'}'"
+        hints = _similar_doc_dirs(files, prefix)
+        if hints:
+            msg += f"; did the folder move? Candidates: {', '.join(hints)}"
+        return DocResult(record.doc_id, "error", message=msg)
     out_dir = ctx.store.base_path(record)
     written, failures = [], 0
     for f in picked:

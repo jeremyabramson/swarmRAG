@@ -80,6 +80,48 @@ class CrawlStrategyTests(unittest.TestCase):
         self.assertEqual(meta["page_title"], "Home")
         self.assertNotIn("Site navigation", body)
 
+    def test_empty_shells_and_duplicates_skipped(self):
+        # PX4's sitemap lists old URLs that redirect client-side: <main> is empty, only nav remains
+        shell = ("<html><body><nav>" + "Flight modes Sensors Peripherals " * 20 + "</nav>"
+                 '<main class="main"></main></body></html>')
+        f = FakeFetcher()
+        f.add("https://docs.x.org/sitemap.xml", urlset(
+            [f"https://docs.x.org/en/{p}" for p in ("a.html", "b.html", "old1.html", "old2.html", "a/index.html")]),
+            ctype="application/xml")
+        f.add("https://docs.x.org/en/a.html", html_page("A"))
+        f.add("https://docs.x.org/en/a/index.html", html_page("A"))  # same page under an alias
+        f.add("https://docs.x.org/en/b.html", html_page("B"))
+        f.add("https://docs.x.org/en/old1.html", shell)
+        f.add("https://docs.x.org/en/old2.html", shell)
+        ctx, _ = context(f)
+        res = site.crawl(record("https://docs.x.org/en/", "Documentation-site crawl"), ctx)
+        self.assertEqual(res.status, "ok", res.message)
+        self.assertEqual(sorted(p.rsplit("/", 1)[1] for p in res.files), ["a.md", "b.md"])
+        self.assertIn("3 empty or duplicate skipped", res.message)
+
+    def test_sphinx_generated_pages_not_crawled(self):
+        f = FakeFetcher()
+        f.add("https://a.io/", html_page("Home", links=["_modules/index.html", "_sources/x.rst.txt", "genindex.html",
+                                                        "search.html", "py-modindex.html", "guide.html"]))
+        f.add("https://a.io/guide.html", html_page("Guide"))
+        ctx, _ = context(f)
+        res = site.crawl(record("https://a.io/", "Documentation-site crawl"), ctx)
+        self.assertEqual(res.status, "ok", res.message)
+        self.assertEqual(len(res.files), 2)
+        self.assertFalse([u for u in f.requested if any(k in u for k in ("_modules", "_sources", "index.html",
+                                                                         "search", "modindex"))])
+
+    def test_cap_detected_even_when_pages_skipped(self):
+        f = FakeFetcher()
+        f.add("https://docs.x.org/sitemap.xml", urlset([f"https://docs.x.org/p{i}.html" for i in range(5)]),
+              ctype="application/xml")
+        for i in range(5):
+            f.add(f"https://docs.x.org/p{i}.html", html_page("Same"))  # all identical: 1 written
+        ctx, _ = context(f, max_pages=3)
+        res = site.crawl(record("https://docs.x.org/", "Documentation-site crawl"), ctx)
+        self.assertEqual((res.status, len(res.files)), ("partial", 1))
+        self.assertIn("capped at 3", res.message)
+
     def test_nothing_found_is_error(self):
         ctx, _ = context(FakeFetcher())
         res = site.crawl(record("https://none.io/docs/", "Documentation-site crawl"), ctx)

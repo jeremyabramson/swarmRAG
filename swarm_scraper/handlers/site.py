@@ -1,6 +1,7 @@
 """Documentation-site crawl: llms-full.txt, then llms.txt, then sitemap, then link crawl."""
 from __future__ import annotations
 
+import hashlib
 import re
 import xml.etree.ElementTree as ET
 from collections import deque
@@ -9,7 +10,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from ..convert import html_title, html_to_markdown
+from ..convert import html_title, html_to_markdown, is_empty_shell
 from ..http import FetchError
 from ..output import DocResult, now_iso, slugify
 from . import Context
@@ -18,6 +19,8 @@ SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".css", ".
             ".tar", ".mp4", ".webm", ".woff", ".woff2", ".ttf", ".json", ".xml", ".pdf")
 SITEMAP_NS = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 MD_LINK = re.compile(r"\[[^\]]*\]\((https?://[^)\s]+)\)")
+# Generated pages with no prose: Sphinx source viewers, indexes, search, and asset folders
+SKIP_PATH = re.compile(r"/(_modules|_sources|_static|_images|_downloads)/|/(genindex|py-modindex|search)(\.html)?$")
 
 
 def scope_prefix(url: str) -> str:
@@ -42,7 +45,8 @@ def normalize(url: str) -> str:
 
 
 def in_scope(url: str, prefix: str) -> bool:
-    return normalize(url).startswith(prefix) and not url.lower().endswith(SKIP_EXT)
+    url = normalize(url)
+    return url.startswith(prefix) and not url.lower().endswith(SKIP_EXT) and not SKIP_PATH.search(url)
 
 
 def page_filename(url: str, prefix: str) -> str:
@@ -61,6 +65,9 @@ class SiteCrawler:
         self.out_dir = ctx.store.base_path(record)
         self.written: list[str] = []
         self.failures = 0
+        self.skipped = 0            # empty shells and duplicate bodies
+        self.capped = False         # stopped at max_pages with pages left
+        self._hashes: set[str] = set()
 
     def _meta(self, **extra):
         m = self.record.metadata()
@@ -125,6 +132,9 @@ class SiteCrawler:
     def save_page(self, url: str, resp) -> None:
         name = page_filename(url, self.prefix)
         if "html" in resp.content_type:
+            if is_empty_shell(resp.text):
+                self.skipped += 1
+                return
             body = html_to_markdown(resp.text, url=url)
             meta = self._meta(fetched_url=url, page_title=html_title(resp.text), source_format="html")
         else:
@@ -132,9 +142,15 @@ class SiteCrawler:
             meta = self._meta(fetched_url=url, source_format=resp.content_type or "text")
         if len(body.strip()) < 50:
             return
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if digest in self._hashes:  # same page under another URL (aliases, trailing index.html)
+            self.skipped += 1
+            return
+        self._hashes.add(digest)
         self.written.append(str(self.ctx.store.write_markdown(self.out_dir / name, body, meta)))
 
     def fetch_list(self, urls: list[str], strategy: str) -> None:
+        self.capped = len(urls) > self.ctx.max_pages
         for url in urls[: self.ctx.max_pages]:
             resp = self._try_get(url)
             if resp is None:
@@ -163,6 +179,7 @@ class SiteCrawler:
                 if nxt not in seen and in_scope(nxt, self.prefix):
                     seen.add(nxt)
                     queue.append(nxt)
+        self.capped = bool(queue)
         self.strategy = "link crawl"
 
     def run(self) -> DocResult:
@@ -181,13 +198,14 @@ class SiteCrawler:
                     self.bfs()
         if not self.written:
             return DocResult(self.record.doc_id, "error", message=f"No pages saved ({self.strategy})")
-        capped = self.strategy != "llms-full.txt" and len(self.written) >= self.ctx.max_pages
-        status = "partial" if (self.failures or capped) else "ok"
+        status = "partial" if (self.failures or self.capped) else "ok"
         msg = f"{len(self.written)} pages via {self.strategy}"
-        if capped:
+        if self.capped:
             msg += f" (capped at {self.ctx.max_pages})"
         if self.failures:
             msg += f", {self.failures} failed"
+        if self.skipped:
+            msg += f", {self.skipped} empty or duplicate skipped"
         return DocResult(self.record.doc_id, status, self.written, msg)
 
 

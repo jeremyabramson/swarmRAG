@@ -20,6 +20,14 @@ class DispatchTests(unittest.TestCase):
             rows = list(csv.DictReader(fh))
         self.assertEqual([r["doc_id"] for r in rows], ["D1", "D2", "D3"])
 
+    def test_manual_queue_not_duplicated_on_rerun(self):
+        ctx, root = context(FakeFetcher())
+        r = record("https://x.org/p.pdf", "Manual collection", doc_id="D7")
+        for _ in range(3):
+            process(r, ctx)
+        with open(root / "manual_queue.csv", encoding="utf-8") as fh:
+            self.assertEqual([row["doc_id"] for row in csv.DictReader(fh)], ["D7"])
+
     def test_robots_disallowed_goes_to_manual(self):
         ctx, root = context(FakeFetcher(disallow=("https://blocked.org",)))
         res = process(record("https://blocked.org/page", "Web page to markdown"), ctx)

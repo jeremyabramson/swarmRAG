@@ -44,7 +44,15 @@ class FakeFetcher(Fetcher):
 
 def make_pdf(text: str = "Swarm coordination architecture " * 20) -> bytes:
     """Build a minimal one-page PDF containing extractable text."""
-    content = f"BT /F1 10 Tf 20 700 Td ({text[:900]}) Tj ET".encode()
+    # One short line per Tj so the text stays on the page (PyMuPDF clips text outside the MediaBox).
+    words, lines, line = text[:900].split(), [], ""
+    for w in words:
+        if len(line) + len(w) >= 90:
+            lines.append(line)
+            line = ""
+        line += w + " "
+    lines.append(line)
+    content = ("BT /F1 10 Tf 12 TL 20 750 Td " + " ".join(f"({l.strip()}) Tj T*" for l in lines) + " ET").encode()
     objs = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",

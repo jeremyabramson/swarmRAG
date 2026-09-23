@@ -114,6 +114,17 @@ class DocsFolderTests(unittest.TestCase):
         res = github.docs_folder(record("https://github.com/a/b/tree/main/docs", "Git clone (docs folder)"), ctx)
         self.assertEqual(res.status, "error")
 
+    def test_moved_folder_suggests_candidates(self):
+        # foxglove/mcap moved docs/specification to website/docs/spec
+        f = FakeFetcher()
+        f.add(f"{API}/repos/a/b/git/trees/main?recursive=1",
+              self._tree(["website/docs/spec/index.md", "website/docs/guides/x.md", "README.md", "spec/x.rs"]))
+        ctx, _ = context(f)
+        res = github.docs_folder(record("https://github.com/a/b/tree/main/docs/specification",
+                                        "Git clone (docs folder)"), ctx)
+        self.assertEqual(res.status, "error")
+        self.assertIn("Candidates: website/docs/spec/", res.message)
+
 
 class ReleasesOrgWikiTests(unittest.TestCase):
     def test_releases(self):

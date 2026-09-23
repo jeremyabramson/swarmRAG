@@ -72,8 +72,13 @@ class OutputStore:
             f.write(line + "\n")
 
     def add_manual(self, record, reason: str) -> None:
+        """Queue a document for manual collection, once per doc ID across runs."""
         with self._lock:
             new = not self.manual_path.exists()
+            if not new:
+                with self.manual_path.open(newline="", encoding="utf-8") as f:
+                    if any(row.get("doc_id") == record.doc_id for row in csv.DictReader(f)):
+                        return
             with self.manual_path.open("a", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 if new:
