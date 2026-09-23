@@ -48,7 +48,7 @@ class DocRecord:
 
     @property
     def is_confirmed(self) -> bool:
-        return self.verified.startswith("Seen in search results")
+        return self.verified.startswith(("Seen in search results", "Checked live"))
 
     def metadata(self) -> dict:
         return {

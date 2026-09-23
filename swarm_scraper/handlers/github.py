@@ -206,18 +206,25 @@ def org_listing(record, ctx: Context) -> DocResult:
                      f"{r.get('archived', False)} | {(r.get('pushed_at') or '')[:10]} | {desc} |")
     written = [str(ctx.store.write_markdown(out_dir / "_index.md", "\n".join(lines) + "\n",
                                             _meta(record, repo_count=len(repos))))]
-    failures = 0
+    failures = no_readme = 0
     for r in [r for r in repos if not r.get("archived")][: ctx.max_org_readmes]:
         try:
             body = ctx.fetcher.get_ok(f"{API}/repos/{g.owner}/{r['name']}/readme",
                                       headers={"Accept": "application/vnd.github.raw"}).text
-        except FetchError:
-            failures += 1
+        except FetchError as exc:
+            if exc.status == 404:  # repository has no README (e.g. the org's .github repo)
+                no_readme += 1
+            else:
+                failures += 1
             continue
         written.append(str(ctx.store.write_markdown(out_dir / f"{r['name']}.md", body,
                                                     _meta(record, fetched_url=r["html_url"], repo=r["name"]))))
-    return DocResult(record.doc_id, "ok" if not failures else "partial", written,
-                     f"{len(repos)} repositories, {len(written) - 1} READMEs")
+    msg = f"{len(repos)} repositories, {len(written) - 1} READMEs"
+    if no_readme:
+        msg += f", {no_readme} without a README"
+    if failures:
+        msg += f", {failures} failed"
+    return DocResult(record.doc_id, "ok" if not failures else "partial", written, msg)
 
 
 def wiki(record, ctx: Context) -> DocResult:

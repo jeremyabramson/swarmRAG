@@ -176,6 +176,17 @@ class ReleasesOrgWikiTests(unittest.TestCase):
         self.assertIn("ROS2swarm", index)
         self.assertNotIn("forked", index)
 
+    def test_org_repo_without_readme_is_not_a_failure(self):
+        f = FakeFetcher()
+        f.add(f"{API}/orgs/o/repos?per_page=100", [
+            {"name": "main", "html_url": "https://github.com/o/main", "stargazers_count": 5, "fork": False},
+            {"name": ".github", "html_url": "https://github.com/o/.github", "stargazers_count": 0, "fork": False}])
+        f.add(f"{API}/repos/o/main/readme", "# Main", ctype="text/plain")
+        ctx, _ = context(f)
+        res = github.org_listing(record("https://github.com/o", "GitHub organization listing, then READMEs"), ctx)
+        self.assertEqual(res.status, "ok", res.message)
+        self.assertIn("1 without a README", res.message)
+
     def test_wiki_uses_git_runner(self):
         def fake_git(args, cwd=None):
             dest = Path(args[-1])
