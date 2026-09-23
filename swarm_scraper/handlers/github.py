@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ..convert import html_to_markdown
 from ..http import FetchError
 from ..output import DocResult, now_iso
 from . import Context
@@ -15,6 +16,9 @@ from . import Context
 API = "https://api.github.com"
 RAW = "https://raw.githubusercontent.com"
 DOC_EXTS = (".md", ".mdx", ".markdown", ".rst", ".txt", ".adoc")
+# Used only when an explicitly named folder has no prose docs: message definitions, schemas, HTML
+SPEC_EXTS = (".xml", ".xsd", ".dtd", ".html", ".htm", ".json", ".yaml", ".yml", ".proto", ".idl", ".msg", ".srv",
+             ".action", ".fbs", ".capnp")
 SKIP_DIRS = ("node_modules/", ".github/", "vendor/", "third_party/", "3rdparty/", "test/", "tests/")
 PREFERRED_DOC_DIRS = ("docs/", "doc/", "documentation/", "en/", "_docs/")
 RESERVED = {"orgs", "topics", "settings", "marketplace", "sponsors", "features"}
@@ -124,10 +128,12 @@ def docs_folder(record, ctx: Context) -> DocResult:
             if any(f.startswith(d) for f in files):
                 prefix = d
                 break
-    picked = [f for f in files
-              if f.startswith(prefix) and f.lower().endswith(DOC_EXTS)
-              and not any(("/" + s) in ("/" + f) for s in SKIP_DIRS)]
-    picked.sort()
+    def pick(exts):
+        return sorted(f for f in files if f.startswith(prefix) and f.lower().endswith(exts)
+                      and not any(("/" + s) in ("/" + f) for s in SKIP_DIRS))
+    picked = pick(DOC_EXTS)
+    if not picked and g.path:  # e.g. OpenAMASE/docs/lmcp holds only CMASI.xml message definitions
+        picked = pick(SPEC_EXTS)
     truncated = tree.get("truncated", False) or len(picked) > ctx.max_repo_files
     picked = picked[: ctx.max_repo_files]
     if not picked:
@@ -146,8 +152,13 @@ def docs_folder(record, ctx: Context) -> DocResult:
             failures += 1
             ctx.log(f"  ! {f}: {exc}")
             continue
-        rel = Path(f[len(prefix):]).with_suffix(".md")
-        meta = _meta(record, fetched_url=url, repo_path=f, source_format=Path(f).suffix.lstrip("."))
+        suffix = Path(f).suffix.lower()
+        if suffix in (".html", ".htm"):
+            body = html_to_markdown(body, url=f"https://github.com/{g.owner}/{g.repo}/blob/{ref}/{f}")
+        # keep the original extension for non-prose files so CMASI.xml and CMASI.html do not collide
+        rel = Path(f[len(prefix):])
+        rel = rel.with_suffix(".md") if suffix in DOC_EXTS else rel.with_name(rel.name + ".md")
+        meta = _meta(record, fetched_url=url, repo_path=f, source_format=suffix.lstrip("."))
         written.append(str(ctx.store.write_markdown(out_dir / rel, body, meta)))
     status = "ok" if written and not failures and not truncated else ("partial" if written else "error")
     msg = f"{len(written)} files from {g.owner}/{g.repo}/{prefix}"

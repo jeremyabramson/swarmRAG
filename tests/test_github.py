@@ -3,7 +3,7 @@ from pathlib import Path
 
 from swarm_scraper.handlers import github
 from swarm_scraper.handlers.github import parse_github_url
-from tests.helpers import FakeFetcher, context, read_doc, record
+from tests.helpers import FakeFetcher, context, html_page, read_doc, record
 
 API, RAW = "https://api.github.com", "https://raw.githubusercontent.com"
 
@@ -96,6 +96,24 @@ class DocsFolderTests(unittest.TestCase):
         self.assertEqual(len(res.files), 2)
         meta, _ = read_doc([p for p in res.files if p.endswith("intro.md")][0])
         self.assertEqual(meta["source_format"], "rst")
+
+    def test_named_folder_without_prose_takes_spec_files(self):
+        # afrl-rq/OpenAMASE/tree/master/OpenAMASE/docs/lmcp holds CMASI.xml and friends
+        f = FakeFetcher()
+        f.add(f"{API}/repos/a/b/git/trees/master?recursive=1",
+              self._tree(["docs/lmcp/CMASI.xml", "docs/lmcp/detail.html", "docs/lmcp/logo.png", "src/x.java"]))
+        f.add(f"{RAW}/a/b/master/docs/lmcp/CMASI.xml", "<MDM><Name>CMASI</Name></MDM>", ctype="text/plain")
+        f.add(f"{RAW}/a/b/master/docs/lmcp/detail.html", html_page("LMCP detail"), ctype="text/plain")
+        ctx, _ = context(f)
+        res = github.docs_folder(record("https://github.com/a/b/tree/master/docs/lmcp", "Git clone (docs folder)"), ctx)
+        self.assertEqual(res.status, "ok", res.message)
+        self.assertEqual(sorted(Path(p).name for p in res.files), ["CMASI.xml.md", "detail.html.md"])
+        meta, body = read_doc([p for p in res.files if p.endswith("CMASI.xml.md")][0])
+        self.assertEqual(meta["source_format"], "xml")
+        self.assertIn("<Name>CMASI</Name>", body)
+        _, html_body = read_doc([p for p in res.files if p.endswith("detail.html.md")][0])
+        self.assertIn("# LMCP detail", html_body)
+        self.assertNotIn("<p>", html_body)
 
     def test_cap_marks_partial(self):
         f = FakeFetcher()
